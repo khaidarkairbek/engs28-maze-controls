@@ -14,6 +14,10 @@
 #define JOYSTICK_X_CHANNEL 1
 #define JOYSTICK_Y_CHANNEL 0
 #define V_REF 5
+#define TURN_MAX_Y 40
+#define TURN_MAX_X 15  // zero to 512
+#define TURN_MAX_X_HIGH 30 //512 TO 1023
+
 
 #define TIME_LIMIT 90000 // Time limit in milliseconds (60 seconds)
 
@@ -21,7 +25,8 @@ typedef enum {
     START, 
     GAME, 
     IDLE, 
-    LOSE
+    LOSE, 
+    WIN
 } MAZE_STATE_t; 
 
 void initIdlePinChangeInterrupt(void);
@@ -29,16 +34,29 @@ void initStartPinChangeInterrupt(void);
 void initGamePinChangeInterrupt(void);
 void moveMotor(uint8_t stepPin, uint8_t dirPin, uint8_t dir, uint16_t steps);
 void readJoystickAndMoveMotors(void); 
+void readJoystickAndMoveMotors1(void);
 void initTimer1(void); // Function to initialize Timer1
 void initTimer0(void); // Function to initialize Timer0
 void updateDisplay(uint16_t time_in_seconds); // Function to update the display
+uint8_t SevenSeg_digitToSegment(uint8_t digit);
+
 
 /* GLOBAL VARIABLES */
-volatile MAZE_STATE_t current_state, next_state = IDLE; 
-volatile uint8_t userButtonStateChange;
-volatile uint8_t move_enable, timer_count_enable; 
-volatile uint8_t startFinishFlag;
-volatile uint16_t time_counter = 0; // Variable to count timer overflows
+volatile MAZE_STATE_t current_state = IDLE;
+volatile MAZE_STATE_t next_state = IDLE; 
+volatile uint8_t userButtonStateChange = 0;
+volatile uint8_t move_enable = 0;
+volatile uint8_t timer_count_enable = 0; 
+volatile uint8_t startFinishFlag = 0;
+volatile uint8_t winFlag = 0;
+volatile uint8_t timer0Flag = 0;
+volatile uint16_t time_counter = TIME_LIMIT / 1000; // Variable to count timer overflows
+volatile int16_t  positionX = 0; 
+volatile int16_t  positionY = 0; 
+volatile int16_t  stepsX = 0; 
+volatile int16_t  stepsY = 0;
+volatile uint16_t oldJoystickX = 512;
+volatile uint16_t oldJoystickY = 512;
 
 uint16_t display_buffer[HT16K33_NBUF] = {0}; // Display buffer
 
@@ -62,8 +80,6 @@ int main(void) {
   initTimer1(); // Initialize Timer1
   initTimer0(); // Initialize Timer0
 
-     
-
   while(1) {
     switch(current_state) {
         case IDLE: 
@@ -76,12 +92,13 @@ int main(void) {
             }
             PORTD &= (1 << PORTD3);
             PORTD |= (1 << PORTD3);     // set bit 3  to turn red LED on
+            updateDisplay(time_counter); // Update display with current time
             break; 
         case START:
             printf("Game Start\r\n");
             move_enable = 1; 
-            timer_count_enable = 0;
-            time_counter = 0; // Reset time counter
+            timer_count_enable = 1;
+            time_counter = TIME_LIMIT / 1000; // Reset time counter
             PORTD &= (1 << PORTD4);
             PORTD |= (1 << PORTD4);     // set bit 4  to turn green LED on
             if (startFinishFlag == 1){
@@ -91,17 +108,26 @@ int main(void) {
             break;
         case GAME:
             printf("Game Playing\r\n"); 
-            move_enable = 1; 
-            timer_count_enable = 1; 
+            move_enable = 1;  
             PORTD &= ~(1 << PORTD4);  // turn green LED off
-            if (time_counter >= TIME_LIMIT / 1000) { // Check if time limit reached
+            if (time_counter == 0) { // Check if time limit reached
                 next_state = LOSE;
             }
+	    if (winFlag == 1) {
+		next_state = WIN;
+		winFlag = 0;
+	    }
             updateDisplay(time_counter); // Update display with current time
             break;
         case LOSE:
             move_enable = 0;
             timer_count_enable = 0;
+            PORTD &= ~(1 << PORTD4);  // turn green LED off
+            PORTD |= (1 << PORTD3);   // turn red LED on
+            break;
+	case WIN:
+	    move_enable = 0;
+	    timer_count_enable = 0;
             PORTD &= ~(1 << PORTD4);  // turn green LED off
             PORTD |= (1 << PORTD3);   // turn red LED on
             break;
@@ -132,6 +158,12 @@ int main(void) {
                 // No need to re-initialize interrupts for LOSE state
             }
             break;
+        case WIN:
+            if (current_state != next_state){
+                current_state = next_state;
+                // No need to re-initialize interrupts for LOSE state
+            }
+            break;
     }
   }
   return 0;                            /* This line is never reached */
@@ -141,25 +173,34 @@ ISR(PCINT2_vect) {
    userButtonStateChange = 1;               // Set flag to notify main
 }
 
-void initIdlePinChangeInterrupt(void) {
-    PCICR  |= (1 << PCIE2);         // Enable pin-change interrupt for D-pins
-    PCMSK2 |= (1 << PD5);           // Set pin mask for bit 5 of Port D
+ISR(PCINT0_vect) {
+   if (!(PINB & (1 << PB4))) {
+       startFinishFlag = 1; // Set flag to notify main if start sensor is triggered (active low to high)
+   }
+   if (PINB & (1 << PB5)) {
+       winFlag = 1; // Set win flag if stop sensor is triggered (active low to high)
+   }
 }
 
-ISR(PCINT0_vect) {
-   startFinishFlag = 1;                 // Set flag to notify main
+void initIdlePinChangeInterrupt(void) {
+    PCICR  &= (1 << PCIE2); // Disable other pin-change interrupts
+    PCICR  |= (1 << PCIE2);  // Enable pin-change interrupt for D-pins
+    PCMSK2 &= (1 << PD5);
+    PCMSK2 |= (1 << PD5);    // Set pin mask for bit 5 of Port D
 }
 
 void initStartPinChangeInterrupt(void){
-    PCICR  &= ~(1 << PCIE2);
-    PCICR  |= (1 << PCIE0);         // Enable pin-change interrupt for B-pins
-    PCMSK0 |= (1 << PB4);           // Set pin mask for bit 4 of Port B Start sensor
+    PCICR  &= (1 << PCIE0); // Disable other pin-change interrupts
+    PCICR  |= (1 << PCIE0);  // Enable pin-change interrupt for B-pins
+    PCMSK0 &= (1 << PB4);
+    PCMSK0 |= (1 << PB4);    // Set pin mask for bit 4 of Port B Start sensor
 }
 
 void initGamePinChangeInterrupt(void){
-    PCICR  |= (1 << PCIE0);         // Enable pin-change interrupt for B-pins
-    PCMSK0 &= ~(1 << PB4);
-    PCMSK0 |= (1 << PB5);           // Set pin mask for bit 5 of Port B Stop sensor
+    PCICR  &= (1 << PCIE0); // Disable other pin-change interrupts
+    PCICR  |= (1 << PCIE0);  // Enable pin-change interrupt for B-pins
+    PCMSK0 &= (1 << PB5);
+    PCMSK0 |= (1 << PB5);    // Set pin mask for bit 5 of Port B Stop sensor
 }
 
 void moveMotor(uint8_t stepPin, uint8_t dirPin, uint8_t dir, uint16_t steps) {
@@ -179,30 +220,43 @@ void moveMotor(uint8_t stepPin, uint8_t dirPin, uint8_t dir, uint16_t steps) {
     }
 }
 
+
 void readJoystickAndMoveMotors(void) {
     printf("Moving\r\n");
     ADC_setReference(V_REF); // Set reference 
 
     ADC_setChannel(JOYSTICK_X_CHANNEL); // Get value for X
-    uint16_t joystickX = ADC_getValue();
+    uint16_t newJoystickX = ADC_getValue();
 
-    ADC_setChannel(JOYSTICK_Y_CHANNEL); // Get Value for Y
-    uint16_t joystickY = ADC_getValue();
-
-    uint16_t stepsX = abs(joystickX - 512) / 10; // Adjust scaling as necessary
-    uint16_t stepsY = abs(joystickY - 512) / 10;
-
-    // Move depending on X and Y potentiometer values
-    if (joystickX > 522) {
-        moveMotor(STEP_X_PIN, DIR_X_PIN, 0, stepsX);
-    } else if (joystickX < 502) {
-        moveMotor(STEP_X_PIN, DIR_X_PIN, 1, stepsX);
+    if (newJoystickX > 482 && newJoystickX < 542){
+        newJoystickX = 512;
     }
 
-    if (joystickY > 522) {
+    int16_t diffJoystickX = newJoystickX - oldJoystickX;
+    oldJoystickX = newJoystickX; 
+    int16_t stepsX = (int16_t)((uint32_t)(TURN_MAX_X_HIGH * diffJoystickX) / 512);
+    
+    if (stepsX > 0) {
+        moveMotor(STEP_X_PIN, DIR_X_PIN, 0, stepsX);
+    } else if (stepsX < 0) {
+        moveMotor(STEP_X_PIN, DIR_X_PIN, 1, abs(stepsX)*7/8);
+    }
+
+    ADC_setChannel(JOYSTICK_Y_CHANNEL); // Get value for X
+    uint16_t newJoystickY = ADC_getValue();
+
+    if (newJoystickY > 482 && newJoystickY < 542){
+        newJoystickY = 512;
+    }
+
+    int16_t diffJoystickY = newJoystickY - oldJoystickY;
+    oldJoystickY = newJoystickY; 
+    int16_t stepsY = (int16_t)((uint32_t)(TURN_MAX_X_HIGH * diffJoystickY) / 512);
+    
+    if (stepsY > 0) {
         moveMotor(STEP_Y_PIN, DIR_Y_PIN, 1, stepsY);
-    } else if (joystickY < 502) {
-        moveMotor(STEP_Y_PIN, DIR_Y_PIN, 0, stepsY);
+    } else if (stepsY < 0) {
+        moveMotor(STEP_Y_PIN, DIR_Y_PIN, 0, abs(stepsY) * 7/8 );
     }
 }
 
@@ -222,7 +276,9 @@ void initTimer1(void) {
 
 ISR(TIMER1_COMPA_vect) {
     if (timer_count_enable) {
-        time_counter++; // Increment the time counter every second
+	if (time_counter > 0) {
+        	time_counter--; // Increment the time counter every second
+	}
     }
 }
 
@@ -245,10 +301,56 @@ ISR(TIMER0_COMPA_vect) {
     if (move_enable) {
         readJoystickAndMoveMotors();
     }
+    //timer0Flag = 1; 
 }
 
 void updateDisplay(uint16_t time_in_seconds) {
-    SevenSeg_number(time_in_seconds, display_buffer); // Convert time to display format
-    SevenSeg_write(display_buffer); // Write to the display
+    uint16_t minutes = time_in_seconds / 60;
+    uint16_t seconds = time_in_seconds % 60;
+
+    // Format the display buffer to show minutes and seconds
+    // Assuming the seven-segment display has 4 digits, formatted as MM:SS
+    // You might need to adjust the indices based on your specific display library and buffer structure
+
+    // Clear the display buffer
+    for (int i = 0; i < HT16K33_NBUF; i++) {
+        display_buffer[i] = 0;
+    }
+
+    // Display minutes
+    if (minutes > 9) {
+        display_buffer[0] = SevenSeg_digitToSegment(minutes / 10); // Tens place of minutes
+    } else {
+        display_buffer[0] = 0; // If minutes is less than 10, no tens digit
+    }
+    display_buffer[1] = SevenSeg_digitToSegment(minutes % 10); // Ones place of minutes
+
+    // Display colon separator (if your display supports it)
+    display_buffer[2] = 0x02; // This assumes 0x02 is the colon segment pattern
+
+    // Display seconds
+    display_buffer[3] = SevenSeg_digitToSegment(seconds / 10); // Tens place of seconds
+    display_buffer[4] = SevenSeg_digitToSegment(seconds % 10); // Ones place of seconds
+
+    // Write to the display
+    SevenSeg_write(display_buffer);
 }
 
+uint8_t SevenSeg_digitToSegment(uint8_t digit) {
+    static const uint8_t segmentMap[10] = {
+        0x3F, // 0
+        0x06, // 1
+        0x5B, // 2
+        0x4F, // 3
+        0x66, // 4
+        0x6D, // 5
+        0x7D, // 6
+        0x07, // 7
+        0x7F, // 8
+        0x6F  // 9
+    };
+    if (digit < 10) {
+        return segmentMap[digit];
+    }
+    return 0; // Default to blank if invalid digit
+}
