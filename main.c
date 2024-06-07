@@ -295,7 +295,7 @@ void readJoystickAndMoveMotorsNormal(void) {
     newJoystickY = (newJoystickY > 482 && newJoystickY < 542) ? 512 : newJoystickY;
     int16_t stepsY = (int16_t)((uint32_t)(TURN_MAX_Y * newJoystickY) / 512 - TURN_MAX_Y);
     if (stepsY > 0) {
-        moveMotor(STEP_Y_PIN, DIR_Y_PIN, 1, (stepsY * 1) / 20 );
+        moveMotor(STEP_Y_PIN, DIR_Y_PIN, 1, (stepsY * 1) / 15 );
     } else if (stepsY < 0) {
         moveMotor(STEP_Y_PIN, DIR_Y_PIN, 0, (abs(stepsY) * 1)/20);
     }
